@@ -1,0 +1,62 @@
+# Automatska izgradnja na GitHubu – nije potreban Android Studio.
+#  - uvijek: testovi + APK za instalaciju na mobitel (inačica "full")
+#  - ako su postavljeni tajni ključevi (Settings → Secrets → Actions): potpisani AAB za Google Play
+#    (inačica "play") i potpisani APK (inačica "full")
+name: Izgradi APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEY: ${{ secrets.SIGNING_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Pronađi projekt
+        run: |
+          # Ako je uploadan zip, raspakiraj ga
+          if [ -z "$(find . -name settings.gradle.kts -not -path './.git/*')" ]; then
+            for z in $(find . -maxdepth 2 -name '*.zip'); do unzip -q -o "$z" -d .; done
+          fi
+          SETTINGS=$(find . -name settings.gradle.kts -not -path './.git/*' | head -1)
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::Projekt nije pronađen."
+            find . -maxdepth 3 -not -path './.git*' | sort
+            exit 1
+          fi
+          echo "PROJECT_DIR=$(cd "$(dirname "$SETTINGS")" && pwd)" >> "$GITHUB_ENV"
+
+      - name: Testovi i APK (za instalaciju na mobitel)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle :core:test :app:testFullDebugUnitTest :app:assembleFullDebug --stacktrace
+
+      - name: Preuzimanje APK-a
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoSyncer-apk
+          path: "**/app/build/outputs/apk/full/debug/*.apk"
+
+      - name: Potpisani AAB za Google Play
+        if: env.HAS_KEY == 'true'
+        working-directory: ${{ env.PROJECT_DIR }}
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/upload.jks"
